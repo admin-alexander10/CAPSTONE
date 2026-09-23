@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantumGeoRescue AI - Acceso Corporativo B2G</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .glow-effect {
+            box-shadow: 0 0 50px -10px rgba(239, 68, 68, 0.15);
+        }
+        .glow-button {
+            box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4);
+        }
+    </style>
+</head>
+<body class="bg-[#0b0f19] text-slate-100 min-h-screen flex flex-col selection:bg-red-500 selection:text-white">
+
+    <!-- VISTA 1: PANTALLA DE ACCESO COMERCIAL / B2G -->
+    <div id="auth-view" class="flex-1 flex items-center justify-center p-4 relative overflow-hidden">
+        <!-- Fondo con efecto lumínico de alta tecnología -->
+        <div class="absolute -top-40 -left-40 w-96 h-96 bg-red-600/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div class="absolute -bottom-40 -right-40 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl pointer-events-none"></div>
+
+        <div class="bg-slate-900/80 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-8 md:p-10 glow-effect max-w-md w-full relative z-10">
+            <!-- Header de Marca -->
+            <div class="text-center mb-8">
+                <div class="inline-flex items-center justify-center bg-gradient-to-tr from-red-600 to-rose-500 text-white font-black px-4 py-1.5 rounded-xl text-xl tracking-wider shadow-lg mb-4">
+                    Q-GEO <span class="text-xs font-light ml-1.5 bg-black/20 px-1.5 py-0.5 rounded">AI</span>
+                </div>
+                <h1 class="font-extrabold text-2xl text-white tracking-tight">QuantumGeoRescue</h1>
+                <p class="text-xs text-slate-400 mt-1 uppercase tracking-widest font-medium">Plataforma Nacional B2G & Privacidad Activa</p>
+            </div>
+
+            <!-- Pestañas de Navegación Estilizadas -->
+            <div class="grid grid-cols-2 bg-slate-950/60 p-1 rounded-xl mb-6 border border-slate-800/60">
+                <button onclick="cambiarTab('login')" id="tab-login-btn" class="py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 shadow transition-all duration-200">Iniciar Sesión</button>
+                <button onclick="cambiarTab('registro')" id="tab-registro-btn" class="py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition-all duration-200">Registrarse</button>
+            </div>
+
+            <!-- Formulario de Login -->
+            <form id="form-login" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Usuario Operativo</label>
+                    <input type="text" id="login-usuario" required class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition" placeholder="Ej. standy_cerna">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Contraseña</label>
+                    <input type="password" id="login-password" required class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition" placeholder="••••••••">
+                </div>
+                <button type="submit" class="w-full bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 font-bold text-white py-3 rounded-xl text-sm transition-all duration-200 glow-button mt-2">
+                    Acceder al Sistema
+                </button>
+                <div id="resultado-login" class="text-xs text-center mt-3 font-medium"></div>
+            </form>
+
+            <!-- Formulario de Registro (Oculto por defecto) -->
+            <form id="form-registro" class="space-y-4 hidden">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Nuevo Usuario</label>
+                    <input type="text" id="reg-usuario" required class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition" placeholder="Crea tu identificador">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Contraseña</label>
+                    <input type="password" id="reg-password" required class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition" placeholder="••••••••">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1.5">Rol Comercial / Operativo</label>
+                    <select id="reg-rol" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition">
+                        <option value="Ciudadano">Ciudadano (B2C)</option>
+                        <option value="CentroComandoB2G">Centro de Comando (B2G)</option>
+                    </select>
+                </div>
+                <button type="submit" class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 font-bold text-white py-3 rounded-xl text-sm transition-all duration-200 shadow-lg shadow-blue-600/20 mt-2">
+                    Registrarse en Base de Datos
+                </button>
+                <div id="resultado-registro" class="text-xs text-center mt-3 font-medium"></div>
+            </form>
+
+            <div class="mt-8 pt-6 border-t border-slate-800/80 text-center">
+                <p class="text-[11px] text-slate-500">Sistema seguro respaldado por algoritmos híbridos de alta precisión.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- VISTA 2: PANEL PRINCIPAL DE EMERGENCIA Y MAPA (Oculto hasta iniciar sesión) -->
+    <div id="dashboard-view" class="hidden flex-1 flex flex-col">
+        <!-- Header -->
+        <header class="bg-slate-900/90 backdrop-blur-md border-b border-slate-800 py-4 px-6 flex justify-between items-center shadow-md sticky top-0 z-50">
+            <div class="flex items-center space-x-3">
+                <span class="bg-red-600 text-white font-black px-3 py-1.5 rounded-xl text-base tracking-wider shadow">Q-GEO</span>
+                <div>
+                    <h1 class="font-bold text-base text-white">QuantumGeoRescue AI</h1>
+                    <p class="text-[11px] text-slate-400">Sistema Nacional de Respuesta a Desastres & B2G</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="user-status" class="text-xs text-slate-300 hidden sm:block bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
+                    Usuario: <span id="lbl-username" class="text-amber-400 font-semibold">--</span> (<span id="lbl-rol">--</span>)
+                </div>
+                <button onclick="cerrarSesion()" class="bg-slate-800 hover:bg-red-600 text-white text-xs font-medium px-3.5 py-2 rounded-xl transition duration-200">Cerrar Sesión</button>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <main class="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Columna Izquierda: Red Familiar -->
+            <div class="space-y-6">
+                <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
+                    <h2 class="text-sm font-bold mb-1 text-slate-100 flex items-center gap-2"><span>🛡️</span> Red de Protección Familiar</h2>
+                    <p class="text-xs text-slate-400 mb-5">Vincula familiares para notificarles en caso de emergencia crítica.</p>
+                    <form id="form-familiar" class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5">Nombre del Familiar</label>
+                            <input type="text" id="fam-nombre" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-red-500" placeholder="Ej. Adelfio (Padre)">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-slate-300 mb-1.5">Parentesco</label>
+                            <input type="text" id="fam-parentesco" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-red-500" placeholder="Padre, Madre, Hermano...">
+                        </div>
+                        <button type="submit" class="w-full bg-slate-800 hover:bg-slate-700 font-semibold text-white py-2.5 rounded-xl text-xs transition">
+                            Vincular Familiar
+                        </button>
+                    </form>
+                    <div id="resultado-familiar" class="mt-3 text-xs text-emerald-400 font-medium"></div>
+                </div>
+            </div>
+
+            <!-- Columna Central / Derecha: Alerta y Mapa -->
+            <div class="lg:col-span-2 space-y-6 flex flex-col">
+                <div class="bg-gradient-to-r from-red-950/60 via-slate-900 to-slate-900 border border-red-500/30 rounded-3xl p-6 shadow-xl flex flex-col sm:flex-row justify-between items-center gap-4">
+                    <div>
+                        <h2 class="text-base font-bold text-red-400 flex items-center gap-2">
+                            <span>🚨</span> Botón de Emergencia / Sismo SOS
+                        </h2>
+                        <p class="text-xs text-slate-300 mt-1">
+                            Privacidad Activa: Ubicación oculta en standby. Al activarse, se enruta a rescatistas locales y familia.
+                        </p>
+                    </div>
+                    <button id="btn-emergencia" class="bg-red-600 hover:bg-red-500 active:scale-95 text-white font-black px-6 py-4 rounded-2xl text-xs shadow-lg shadow-red-600/30 transition whitespace-nowrap">
+                        ¡ACTIVAR EMERGENCIA!
+                    </button>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl flex-1 min-h-[380px] flex flex-col">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300">Mapa Operativo Nacional (PostGIS & Rutas Óptimas)</h3>
+                        <span id="coords-status" class="text-[11px] font-mono text-slate-400 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">Lat: -7.163, Lng: -78.500</span>
+                    </div>
+                    <div id="map" class="w-full flex-1 rounded-2xl min-h-[300px] z-10 border border-slate-800"></div>
+                </div>
+
+                <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-xl">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-3">Estado del Despacho B2G & Enrutamiento Vial</h3>
+                    <div id="log-despacho" class="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 text-xs text-slate-300 font-mono h-32 overflow-y-auto">
+                        [Sistema en standby. Esperando eventos críticos...]
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Script de Control -->
+    <script>
+        const API_URL = "http://localhost:8000";
+        let usuarioActual = "";
+        let map = null;
+        let markerEmergencia = null;
+
+        function cambiarTab(tipo) {
+            const loginForm = document.getElementById('form-login');
+            const regForm = document.getElementById('form-registro');
+            const loginBtn = document.getElementById('tab-login-btn');
+            const regBtn = document.getElementById('tab-registro-btn');
+
+            if (tipo === 'login') {
+                loginForm.classList.remove('hidden');
+                regForm.classList.add('hidden');
+                loginBtn.className = "py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 shadow transition-all duration-200";
+                regBtn.className = "py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition-all duration-200";
+            } else {
+                loginForm.classList.add('hidden');
+                regForm.classList.remove('hidden');
+                regBtn.className = "py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 shadow transition-all duration-200";
+                loginBtn.className = "py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition-all duration-200";
+            }
+        }
+
+        // Manejar Login
+        document.getElementById('form-login').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const usuario = document.getElementById('login-usuario').value;
+            const password = document.getElementById('login-password').value;
+            const resDiv = document.getElementById('resultado-login');
+            resDiv.innerHTML = `<span class="text-slate-400">Verificando credenciales...</span>`;
+
+            try {
+                const response = await fetch(`${API_URL}/auth/login/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ usuario, password })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    usuarioActual = data.usuario;
+                    document.getElementById('lbl-username').innerText = data.usuario;
+                    document.getElementById('lbl-rol').innerText = data.rol;
+                    
+                    document.getElementById('auth-view').classList.add('hidden');
+                    document.getElementById('dashboard-view').classList.remove('hidden');
+                    
+                    inicializarMapa();
+                } else {
+                    resDiv.innerHTML = `<span class="text-red-400">${data.detail}</span>`;
+                }
+            } catch (err) {
+                resDiv.innerHTML = `<span class="text-red-400">Error de conexión con FastAPI.</span>`;
+            }
+        });
+
+        // Manejar Registro
+        document.getElementById('form-registro').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const usuario = document.getElementById('reg-usuario').value;
+            const password = document.getElementById('reg-password').value;
+            const rol = document.getElementById('reg-rol').value;
+            const resDiv = document.getElementById('resultado-registro');
+            resDiv.innerHTML = `<span class="text-slate-400">Registrando en base de datos...</span>`;
+
+            try {
+                const response = await fetch(`${API_URL}/auth/registro/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ usuario, password, rol })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    resDiv.innerHTML = `<span class="text-emerald-400">✅ Éxito. Código: ${data.codigo_enlace}. ¡Inicia sesión!</span>`;
+                    setTimeout(() => cambiarTab('login'), 2500);
+                } else {
+                    resDiv.innerHTML = `<span class="text-red-400">${data.detail}</span>`;
+                }
+            } catch (err) {
+                resDiv.innerHTML = `<span class="text-red-400">Error de conexión.</span>`;
+            }
+        });
+
+        function cerrarSesion() {
+            usuarioActual = "";
+            document.getElementById('dashboard-view').classList.add('hidden');
+            document.getElementById('auth-view').classList.remove('hidden');
+        }
+
+        function inicializarMapa() {
+            if (!map) {
+                setTimeout(() => {
+                    map = L.map('map').setView([-7.163, -78.500], 13);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        maxZoom: 19,
+                        attribution: '© OpenStreetMap'
+                    }).addTo(map);
+                    map.invalidateSize();
+                }, 200);
+            }
+        }
+
+        // Vincular Familiar
+        document.getElementById('form-familiar').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const nombre = document.getElementById('fam-nombre').value;
+            const parentesco = document.getElementById('fam-parentesco').value;
+            const resDiv = document.getElementById('resultado-familiar');
+
+            try {
+                const response = await fetch(`${API_URL}/familia/agregar/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ usuario_responsable: usuarioActual, nombre, parentesco, dispositivo_id: "MOV-01" })
+                });
+                const data = await response.json();
+                if (response.ok) resDiv.innerHTML = `✅ ${data.mensaje}`;
+            } catch (err) {
+                resDiv.innerHTML = `<span class="text-red-400">Error al vincular.</span>`;
+            }
+        });
+
+        // Botón Emergencia
+        document.getElementById('btn-emergencia').addEventListener('click', async () => {
+            const logDiv = document.getElementById('log-despacho');
+            logDiv.innerHTML += `<br>[🚨 SISMO/SOS] Capturando ubicación segura...`;
+
+            const lat = -7.163 + (Math.random() - 0.5) * 0.02;
+            const lng = -78.500 + (Math.random() - 0.5) * 0.02;
+            document.getElementById('coords-status').innerText = `Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`;
+
+            if (markerEmergencia) map.removeLayer(markerEmergencia);
+            markerEmergencia = L.marker([lat, lng]).addTo(map).bindPopup("🚨 ¡EMERGENCIA ACTIVA!").openPopup();
+            map.setView([lat, lng], 14);
+
+            try {
+                const response = await fetch(`${API_URL}/alertas/despachar/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ usuario: usuarioActual, tipo_emergencia: "Sismo SOS", nivel_gravedad: 3, latitud: lat, longitude: lng })
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    logDiv.innerHTML += `<br>✅ Jurisdicción: <b>${data.enrutamiento_institucional.departamento}</b>`;
+                    logDiv.innerHTML += `<br>🚒 Institución: <b>${data.enrutamiento_institucional.institucion_responsable}</b>`;
+                    logDiv.innerHTML += `<br>👨‍👩‍👧 Familiares notificados: <b>${data.notificacion_familiar.familiares_alertados.join(', ') || 'Ninguno'}</b>`;
+
+                    const rutaRes = await fetch(`${API_URL}/rescate/calcular-ruta/`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ origen_lat: lat + 0.01, origen_lng: lng + 0.01, destino_lat: lat, destino_lng: lng, bloqueos_detectados: true })
+                    });
+                    const rutaData = await rutaRes.json();
+                    logDiv.innerHTML += `<br>🗺️ Ruta Óptima: <b>${rutaData.tiempo_estimado_llegada}</b>`;
+                }
+            } catch (err) {
+                logDiv.innerHTML += `<br><span class="text-red-400">❌ Error procesando alerta.</span>`;
+            }
+            logDiv.scrollTop = logDiv.scrollHeight;
+        });
+    </script>
+</body>
+</html>
