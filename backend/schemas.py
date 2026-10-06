@@ -1,20 +1,12 @@
-from pydantic import BaseModel
-from datetime import datetime
+# Capa de compatibilidad retroactiva hacia app.schemas
+from app.schemas.alert import AlertaCreate, AlertaResponse, AlertaDetalle
+from app.schemas.auth import LoginRequest, RegistroRequest, AuthResponse
+from app.schemas.family import FamiliarCreate, FamiliarResponse
+from app.schemas.rescue import RutaRequest, RutaResponse
 
-class AlertaCreate(BaseModel):
-    dispositivo_id: str
-    tipo_emergencia: str
-    nivel_gravedad: int
-    latitud: float
-    longitud: float
-    timestamp_dispositivo: datetime
-
-class AlertaResponse(BaseModel):
-    mensaje: str
-    alerta_id: int
-    origen: str
-    estado: str
-    coordenadas: dict
-
-    class Config:
-        from_attributes = True
+__all__ = [
+    "AlertaCreate", "AlertaResponse", "AlertaDetalle",
+    "LoginRequest", "RegistroRequest", "AuthResponse",
+    "FamiliarCreate", "FamiliarResponse",
+    "RutaRequest", "RutaResponse"
+]

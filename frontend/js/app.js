@@ -1,242 +1,1352 @@
-const API_KEY_MAPS = "d055c0b4-9aad-4446-b964-ffb91a31c15a";
-const tileUrl = `https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png?apiKey=${API_KEY_MAPS}`;
+/**
+ * QuantumGeoRescue AI - Lógica Principal del Frontend
+ * Soporte B2C (Ciudadano & Familia) y B2G (Centro de Comando & Rescate)
+ */
 
-let mapInstitucion = null;
-let mapCiudadano = null;
-let marcadorFamiliar = null;
-let cuentaRegresivaInterval = null;
+const App = {
+    // Estado de la sesión y mapas
+    usuarioActual: null,
+    rolActual: null,
+    institucionActual: null,
+    socketInstitucional: null,
+    _authFlowVersion: 0,
+    _adminPanelHooked: false,
+    mapaCiudadano: null,
+    mapaB2G: null,
+    marcadorCiudadano: null,
+    marcadoresB2G: [],
+    polilineaRutaB2G: null,
+    marcadorBaseCOER: null,
+    timerCuentaRegresiva: null,
+    segundosRestantes: 10,
+    reconocimientoVoz: null,
+    escuchandoVoz: false,
+    geolocalizacionActual: null,
+
+    init() {
+        this.verificarSaludBackend();
+        this.verificarSesionPrevia();
+        this.inicializarModuloAntirrobo();
+        this.inicializarPlanesPago();
+        this.inicializarAccesoInstitucional();
+        this.inicializarAceptacionInvitacion();
+        this.inicializarPanelAdministracion();
+        this.restaurarSesionPropietarios();
+    },
+
+    mostrarLoginPropietarios() {
+        this.cerrarSesion();
+        this.cambiarTabAuth('login');
+        document.getElementById('form-login').classList.add('hidden');
+        document.getElementById('form-registro').classList.add('hidden');
+        document.getElementById('form-login-propietarios').classList.remove('hidden');
+        document.getElementById('btn-acceso-propietarios').classList.add('hidden');
+        document.getElementById('login-feedback').textContent = '';
+    },
+
+    ocultarLoginPropietarios() {
+        document.getElementById('form-login-propietarios').classList.add('hidden');
+        document.getElementById('btn-acceso-propietarios').classList.remove('hidden');
+        this.cambiarTabAuth('login');
+    },
+
+    async manejarLoginPropietarios(event) {
+        event.preventDefault();
+        const keyInput = document.getElementById('clave-propietarios');
+        const feedback = document.getElementById('owner-login-feedback');
+        feedback.textContent = 'Validando acceso...';
+        try {
+            const response = await ApiService.loginPropietarios(keyInput.value);
+            sessionStorage.setItem('qgeo_owner_token', response.access_token);
+            sessionStorage.setItem('qgeo_owner_must_change_password', String(response.must_change_password));
+            keyInput.value = '';
+            this.mostrarPanelAdministracion();
+            this.actualizarVistaCambioClavePropietario();
+            if (!response.must_change_password) await this.cargarSolicitudesInstitucionales();
+        } catch (error) {
+            feedback.textContent = error.message;
+            feedback.className = 'text-xs text-center min-h-[1rem] text-red-400';
+        }
+    },
+
+    mostrarPanelAdministracion() {
+        document.getElementById('pantalla-auth').classList.add('hidden');
+        document.getElementById('pantalla-dashboard').classList.add('hidden');
+        document.getElementById('panel-administracion').classList.remove('hidden');
+    },
+
+    restaurarSesionPropietarios() {
+        if (sessionStorage.getItem('qgeo_owner_token')) {
+            this.mostrarPanelAdministracion();
+            this.actualizarVistaCambioClavePropietario();
+            if (sessionStorage.getItem('qgeo_owner_must_change_password') !== 'true') {
+                this.cargarSolicitudesInstitucionales();
+            }
+        }
+    },
+
+    actualizarVistaCambioClavePropietario() {
+        const mustChange = sessionStorage.getItem('qgeo_owner_must_change_password') === 'true';
+        document.getElementById('owner-password-change-form').classList.toggle('hidden', !mustChange);
+        document.getElementById('owner-applications-section').classList.toggle('hidden', mustChange);
+    },
+
+    async cambiarContrasenaPropietarios(event) {
+        event.preventDefault();
+        const currentPassword = document.getElementById('owner-current-password').value;
+        const newPassword = document.getElementById('owner-new-password').value;
+        const confirmation = document.getElementById('owner-confirm-password').value;
+        const feedback = document.getElementById('owner-password-feedback');
+        if (newPassword !== confirmation) {
+            feedback.textContent = 'Las contraseñas nuevas no coinciden.';
+            feedback.className = 'mt-3 text-xs text-red-400';
+            return;
+        }
+        feedback.textContent = 'Actualizando contraseña...';
+        try {
+            const response = await ApiService.cambiarContrasenaPropietarios({
+                current_password: currentPassword,
+                new_password: newPassword,
+            });
+            sessionStorage.setItem('qgeo_owner_token', response.access_token);
+            sessionStorage.setItem('qgeo_owner_must_change_password', 'false');
+            document.getElementById('owner-password-change-form').reset();
+            this.actualizarVistaCambioClavePropietario();
+            await this.cargarSolicitudesInstitucionales();
+        } catch (error) {
+            feedback.textContent = error.message;
+            feedback.className = 'mt-3 text-xs text-red-400';
+        }
+    },
+
+    cerrarSesionPropietarios() {
+        sessionStorage.removeItem('qgeo_owner_token');
+        sessionStorage.removeItem('qgeo_owner_must_change_password');
+        document.getElementById('clave-propietarios').value = '';
+        document.getElementById('owner-current-password').value = '';
+        document.getElementById('owner-new-password').value = '';
+        document.getElementById('owner-confirm-password').value = '';
+        document.getElementById('panel-administracion').classList.add('hidden');
+        document.getElementById('pantalla-auth').classList.remove('hidden');
+        this.ocultarLoginPropietarios();
+    },
+
+    inicializarPanelAdministracion() {
+        if (this._adminPanelHooked) return;
+        this._adminPanelHooked = true;
+        document.getElementById('owner-applications-list')?.addEventListener('click', async (event) => {
+            const button = event.target.closest('[data-admin-action]');
+            if (!button) return;
+            const card = button.closest('[data-owner-application]');
+            const applicationId = Number(card?.dataset.ownerApplication);
+            const action = button.dataset.adminAction;
+            const notes = card.querySelector('[data-review-notes]').value.trim();
+            if (notes.length < 10) {
+                alert('Escribe observaciones de revisión (mínimo 10 caracteres).');
+                return;
+            }
+
+            let payload = { review_notes: notes };
+            if (action === 'approve') {
+                const source = card.querySelector('[data-verification-source]').value.trim();
+                try {
+                    if (new URL(source).protocol !== 'https:') throw new Error();
+                } catch {
+                    alert('Registra una URL HTTPS oficial que hayas consultado.');
+                    return;
+                }
+                if (!window.confirm('¿Confirmas que contrastaste los datos en la fuente oficial y deseas aprobar esta institución?')) return;
+                payload.verification_source = source;
+            } else if (!window.confirm('¿Confirmas el rechazo? La institución y el solicitante permanecerán desactivados.')) {
+                return;
+            }
+
+            button.disabled = true;
+            try {
+                await ApiService.revisarSolicitudInstitucional(applicationId, action === 'approve' ? 'approve' : 'reject', payload);
+                await this.cargarSolicitudesInstitucionales();
+            } catch (error) {
+                button.disabled = false;
+                alert(`No se pudo registrar la decisión: ${error.message}`);
+            }
+        });
+    },
+
+    async cargarSolicitudesInstitucionales() {
+        const list = document.getElementById('owner-applications-list');
+        const feedback = document.getElementById('owner-applications-feedback');
+        if (!list || !sessionStorage.getItem('qgeo_owner_token') || sessionStorage.getItem('qgeo_owner_must_change_password') === 'true') return;
+        const statusFilter = document.getElementById('owner-application-filter').value;
+        feedback.textContent = 'Cargando solicitudes...';
+        try {
+            const applications = await ApiService.listarSolicitudesInstitucionales(statusFilter);
+            feedback.textContent = `${applications.length} solicitud(es)`;
+            if (!applications.length) {
+                list.innerHTML = '<p class="text-sm text-slate-400">No hay solicitudes para este filtro.</p>';
+                return;
+            }
+            list.innerHTML = applications.map((application) => {
+                const pending = application.status === 'pending';
+                return `
+                    <article data-owner-application="${application.id}" class="rounded-xl border border-slate-800 bg-slate-900 p-5">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <h2 class="text-base font-bold text-white">${this.escaparTexto(application.institution_name)}</h2>
+                                <p class="mt-1 text-xs text-slate-400">RUC ${this.escaparTexto(application.ruc)} · ${this.escaparTexto(application.institution_type)}</p>
+                            </div>
+                            <span class="rounded-md border border-slate-700 px-2 py-1 text-[10px] uppercase text-cyan-200">${this.escaparTexto(application.status)}</span>
+                        </div>
+                        <dl class="mt-4 grid grid-cols-1 gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+                            <div><dt class="text-slate-500">Región</dt><dd class="text-slate-200">${this.escaparTexto(application.region)}</dd></div>
+                            <div><dt class="text-slate-500">Solicitante</dt><dd class="text-slate-200">${this.escaparTexto(application.applicant_username)}</dd></div>
+                            <div><dt class="text-slate-500">Contacto</dt><dd class="text-slate-200">${this.escaparTexto(application.contact_name)}</dd></div>
+                            <div><dt class="text-slate-500">Teléfono</dt><dd class="text-slate-200">${this.escaparTexto(application.contact_phone)}</dd></div>
+                            <div class="sm:col-span-2"><dt class="text-slate-500">Correo institucional</dt><dd class="text-slate-200">${this.escaparTexto(application.official_email)}</dd></div>
+                            <div class="sm:col-span-2"><dt class="text-slate-500">Evidencia presentada</dt><dd><a class="break-all text-cyan-300 underline" href="${this.escaparTexto(application.evidence_url)}" target="_blank" rel="noopener noreferrer">Abrir enlace declarado</a></dd></div>
+                            <div class="sm:col-span-2"><dt class="text-slate-500">Recibida</dt><dd class="text-slate-200">${this.escaparTexto(new Date(application.submitted_at).toLocaleString())}</dd></div>
+                        </dl>
+                        ${pending ? `
+                            <div class="mt-4 space-y-3 border-t border-slate-800 pt-4">
+                                <label class="block text-xs text-slate-300">Fuente oficial consultada (HTTPS)
+                                    <input data-verification-source type="url" placeholder="https://www.gob.pe/..." class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white" />
+                                </label>
+                                <label class="block text-xs text-slate-300">Observaciones de revisión
+                                    <textarea data-review-notes minlength="10" rows="3" placeholder="Qué datos contrastaste y qué resultado obtuviste" class="mt-1 w-full resize-y rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"></textarea>
+                                </label>
+                                <div class="flex justify-end gap-2">
+                                    <button type="button" data-admin-action="reject" class="rounded-lg border border-red-800 px-3 py-2 text-xs text-red-300 hover:bg-red-950">Rechazar</button>
+                                    <button type="button" data-admin-action="approve" class="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-600">Aprobar institución</button>
+                                </div>
+                            </div>` : `
+                            <div class="mt-4 border-t border-slate-800 pt-3 text-xs text-slate-400">
+                                <p>Revisó: ${this.escaparTexto(application.reviewed_by || '—')}</p>
+                                <p>Fuente: ${this.escaparTexto(application.verification_source || '—')}</p>
+                                <p>Notas: ${this.escaparTexto(application.review_notes || '—')}</p>
+                            </div>`}
+                    </article>`;
+            }).join('');
+        } catch (error) {
+            feedback.textContent = error.message;
+            list.innerHTML = '';
+            if (error.message.includes('401') || error.message.includes('403')) this.cerrarSesionPropietarios();
+        }
+    },
+
+    inicializarAccesoInstitucional() {
+        const boton = document.getElementById('btn-agregar-usuario-institucion');
+        if (!boton || this._institucionalHooked) return;
+        this._institucionalHooked = true;
+
+        boton.addEventListener('click', async () => {
+            const institutionName = this.institucionActual;
+            const memberName = document.getElementById('institucion-usuario-nombre')?.value.trim();
+            const memberEmail = document.getElementById('institucion-usuario-email')?.value.trim();
+            const role = document.getElementById('institucion-rol')?.value || 'operador';
+
+            if (!memberName || !memberEmail) {
+                alert('Completa el nombre y el correo del usuario institucional.');
+                return;
+            }
+
+            try {
+                const respuesta = await ApiService.agregarUsuarioInstitucional({
+                    institution_name: institutionName,
+                    member_name: memberName,
+                    member_email: memberEmail,
+                    role,
+                    total_users: 1,
+                });
+
+                const costoTotal = Number(respuesta.monthly_price || 0);
+                document.getElementById('institucion-costo-mensual').textContent = `S/${costoTotal.toFixed(0)}`;
+                const invitation = document.getElementById('institucion-enlace-invitacion');
+                invitation.value = respuesta.invitation_url;
+                invitation.classList.remove('hidden');
+                alert(`Invitación creada para ${memberEmail}. Comparte el enlace antes de que expire en 48 horas.`);
+                this.cargarUsuariosInstitucionales(institutionName);
+                this.cargarCuentaInstitucional();
+            } catch (error) {
+                alert(`No se pudo agregar el usuario institucional: ${error.message}`);
+            }
+        });
+
+        const contenedor = document.getElementById('miembros-institucion-b2g');
+        contenedor?.addEventListener('click', async (event) => {
+            const button = event.target.closest('[data-member-action]');
+            if (!button) return;
+            try {
+                const memberCard = button.closest('[data-member-card]');
+                const update = button.dataset.memberAction === 'save-role'
+                    ? { role: memberCard.querySelector('.member-role').value }
+                    : { is_active: button.dataset.memberAction === 'activate' };
+                await ApiService.actualizarMiembroInstitucional(Number(button.dataset.memberId), {
+                    ...update
+                });
+                await this.cargarUsuariosInstitucionales(this.institucionActual);
+                await this.cargarCuentaInstitucional();
+            } catch (error) {
+                alert(`No se pudo actualizar el miembro: ${error.message}`);
+            }
+        });
+    },
+
+    async cargarUsuariosInstitucionales(institutionName) {
+        const contenedor = document.getElementById('miembros-institucion-b2g');
+        if (!contenedor) return;
+
+        try {
+            const miembros = await ApiService.listarUsuariosInstitucionales();
+            const contador = document.getElementById('contador-miembros-institucion');
+            const activos = miembros.filter((miembro) => miembro.is_active);
+            if (contador) contador.textContent = String(activos.length);
+
+            if (!miembros || miembros.length === 0) {
+                contenedor.innerHTML = '<p class="text-xs text-slate-500">Aún no hay miembros en esta cuenta.</p>';
+                return;
+            }
+
+            contenedor.innerHTML = miembros.map((miembro) => `
+                <div data-member-card class="bg-emerald-950/40 border border-emerald-800 rounded-xl p-2 text-xs text-emerald-200">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="font-bold">${this.escaparTexto(miembro.member_name)}</span>
+                        <span class="text-[10px] bg-emerald-900/70 text-emerald-200 px-1.5 py-0.5 rounded-full">${this.escaparTexto(miembro.role)}</span>
+                    </div>
+                    <div class="text-[10px] text-emerald-300/80 mt-1">${this.escaparTexto(miembro.member_email)}</div>
+                    <div class="flex items-center justify-between mt-2">
+                        <span class="text-[10px] ${miembro.is_active ? 'text-emerald-300' : 'text-slate-400'}">${miembro.is_active ? 'Activo' : 'Desactivado'}</span>
+                        <button type="button" data-member-id="${miembro.id}" data-member-action="${miembro.is_active ? 'deactivate' : 'activate'}" class="text-[10px] underline text-slate-200">${miembro.is_active ? 'Desactivar' : 'Reactivar'}</button>
+                    </div>
+                    <div class="flex gap-1 mt-2">
+                        <select class="member-role flex-1 bg-slate-900 border border-slate-700 rounded px-1 py-1 text-[10px]" aria-label="Rol de ${this.escaparTexto(miembro.member_name)}">
+                            ${['operador', 'analista', 'coordinador'].map((role) => `<option value="${role}" ${miembro.role === role ? 'selected' : ''}>${role}</option>`).join('')}
+                        </select>
+                        <button type="button" data-member-id="${miembro.id}" data-member-action="save-role" class="text-[10px] underline text-slate-200">Guardar rol</button>
+                    </div>
+                </div>
+            `).join('');
+        } catch (error) {
+            contenedor.innerHTML = `<p class="text-xs text-red-400">No se pudo cargar la lista institucional: ${error.message}</p>`;
+        }
+    },
+
+    escaparTexto(value) {
+        const element = document.createElement('span');
+        element.textContent = String(value ?? '');
+        return element.innerHTML;
+    },
+
+    inicializarAceptacionInvitacion() {
+        const params = new URLSearchParams(window.location.search);
+        const invitationToken = params.get('invite');
+        const form = document.getElementById('form-aceptar-invitacion');
+        if (!invitationToken || !form) return;
+        form.classList.remove('hidden');
+        document.getElementById('form-login')?.classList.add('hidden');
+        document.getElementById('form-registro')?.classList.add('hidden');
+        document.querySelector('.grid.grid-cols-2.bg-slate-950')?.classList.add('hidden');
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const feedback = document.getElementById('invitacion-feedback');
+            const password = document.getElementById('invitacion-password').value;
+            feedback.textContent = 'Validando invitación...';
+            try {
+                const data = await ApiService.aceptarInvitacionInstitucional({ token: invitationToken, password });
+                this.guardarSesion(data);
+                params.delete('invite');
+                history.replaceState({}, '', `${location.pathname}${params.size ? `?${params}` : ''}`);
+                this.iniciarSesionEnUI(data.usuario, data.rol, data.codigo_enlace, data.institucion);
+            } catch (error) {
+                feedback.textContent = error.message;
+                feedback.className = 'text-xs text-center min-h-[1rem] text-red-400';
+            }
+        });
+    },
+
+    guardarSesion(data) {
+        localStorage.setItem(CONFIG.STORAGE_KEYS.USER, data.usuario);
+        localStorage.setItem(CONFIG.STORAGE_KEYS.ROLE, data.rol);
+        localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN, data.token);
+        localStorage.setItem(CONFIG.STORAGE_KEYS.INSTITUTION, data.institucion || 'individual');
+        if (data.codigo_enlace) localStorage.setItem(CONFIG.STORAGE_KEYS.CODE, data.codigo_enlace);
+    },
+
+    async cargarCuentaInstitucional() {
+        if (!this.institucionActual) return;
+        try {
+            const account = await ApiService.obtenerCuentaInstitucional();
+            const nombre = document.getElementById('institucion-nombre');
+            if (nombre) nombre.value = account.institution_name;
+            const included = document.getElementById('institucion-usuarios-incluidos');
+            const extra = document.getElementById('institucion-usuarios-extra');
+            const price = document.getElementById('institucion-costo-mensual');
+            if (included) included.textContent = String(account.included_users);
+            if (extra) extra.textContent = String(account.extra_users);
+            if (price) price.textContent = `${account.currency} ${Number(account.monthly_total).toFixed(2)}`;
+            const plan = document.getElementById('institucion-plan');
+            if (plan) plan.value = account.plan_code;
+        } catch (error) {
+            console.warn('No se pudo cargar la cuenta institucional:', error.message);
+        }
+    },
+
+    async guardarPlanInstitucional() {
+        const planCode = document.getElementById('institucion-plan')?.value;
+        if (!planCode) return;
+        try {
+            await ApiService.actualizarPlanInstitucional(planCode);
+            await this.cargarCuentaInstitucional();
+            alert('Plan institucional actualizado.');
+        } catch (error) {
+            alert(`No se pudo actualizar el plan: ${error.message}`);
+        }
+    },
+
+    conectarTiempoRealInstitucional() {
+        this.socketInstitucional?.close();
+        const token = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN);
+        if (!token || !this.institucionActual || this.rolActual === 'ciudadano') return;
+        const apiHost = CONFIG.API_HOSTS[0].replace(/^http/, 'ws');
+        const socket = new WebSocket(`${apiHost}${CONFIG.API_PREFIX}/realtime/ws/alerts`);
+        this.socketInstitucional = socket;
+        socket.addEventListener('open', () => socket.send(JSON.stringify({ token })));
+        socket.addEventListener('message', (event) => {
+            try {
+                const notification = JSON.parse(event.data);
+                if (notification.type === 'alert.created') this.cargarAlertasB2G();
+            } catch (error) {
+                console.warn('Evento de tiempo real inválido.', error);
+            }
+        });
+        socket.addEventListener('close', () => {
+            if (this.socketInstitucional === socket && this.usuarioActual) {
+                window.setTimeout(() => this.conectarTiempoRealInstitucional(), 4000);
+            }
+        });
+    },
+
+    inicializarPlanesPago() {
+        document.querySelectorAll('.plan-select').forEach((button) => {
+            button.addEventListener('click', async () => {
+                const planCode = button.dataset.plan;
+                const usuario = this.usuarioActual || document.getElementById('login-usuario')?.value.trim() || 'guest_user';
+
+                try {
+                    const respuesta = await ApiService.iniciarCheckoutPlan({ usuario, plan_code: planCode });
+                    const statusText = respuesta.status === 'active' ? 'activado' : respuesta.status === 'manual_review' ? 'pendiente de validación' : 'pendiente de pago';
+                    alert(`Plan ${planCode.toUpperCase()} ${statusText}. ${respuesta.message}`);
+                } catch (err) {
+                    alert(`No se pudo iniciar la suscripción: ${err.message}`);
+                }
+            });
+        });
+    },
+
+    inicializarModuloAntirrobo() {
+        const overlay = document.getElementById('anti-theft-overlay');
+        if (!overlay || this._antiTheftHooked) return;
+
+        this._antiTheftHooked = true;
+
+        window.addEventListener('beforeunload', (event) => {
+            if (this.usuarioActual) {
+                event.preventDefault();
+                event.returnValue = '';
+                this.mostrarPantallaSeñuelo(
+                    'Apagando sistema...',
+                    'Se está ejecutando el protocolo de protección silenciosa.'
+                );
+                return '';
+            }
+        });
+    },
+
+    mostrarPantallaSeñuelo(titulo, detalle) {
+        const overlay = document.getElementById('anti-theft-overlay');
+        const title = document.getElementById('anti-theft-title');
+        const detail = document.getElementById('anti-theft-detail');
+
+        if (!overlay || !title || !detail) return;
+        title.textContent = titulo;
+        detail.textContent = detalle;
+        overlay.classList.remove('hidden');
+        overlay.classList.add('flex');
+    },
+
+    ocultarPantallaSeñuelo() {
+        const overlay = document.getElementById('anti-theft-overlay');
+        if (overlay) {
+            overlay.classList.add('hidden');
+            overlay.classList.remove('flex');
+        }
+    },
+
+    async capturarFotoIntruso() {
+        const video = document.getElementById('anti-theft-video');
+        const canvas = document.getElementById('anti-theft-canvas');
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error('La cámara no está disponible en este navegador.');
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user' },
+            audio: false
+        });
+
+        try {
+            video.srcObject = stream;
+            await video.play();
+
+            const width = video.videoWidth || 640;
+            const height = video.videoHeight || 480;
+            canvas.width = width;
+            canvas.height = height;
+
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, width, height);
+            return canvas.toDataURL('image/jpeg', 0.9);
+        } finally {
+            stream.getTracks().forEach(track => track.stop());
+        }
+    },
+
+    async activarModoSeñueloAntirrobo() {
+        if (!this.usuarioActual) {
+            alert('Debe iniciar sesión para activar la protección antirrobo.');
+            return;
+        }
+
+        this.mostrarPantallaSeñuelo(
+            'Cargando sistema de seguridad...',
+            'Se está validando la identidad del usuario y capturando evidencia del intruso.'
+        );
+
+        try {
+            const fotoBase64 = await this.capturarFotoIntruso();
+            const ubicacion = await new Promise((resolve) => {
+                if (!navigator.geolocation) {
+                    resolve({ lat: CONFIG.DEFAULT_COORDS.lat, lng: CONFIG.DEFAULT_COORDS.lng });
+                    return;
+                }
+
+                navigator.geolocation.getCurrentPosition(
+                    (position) => resolve({
+                        lat: position.coords.latitude,
+                        lng: position.coords.longitude
+                    }),
+                    () => resolve({
+                        lat: CONFIG.DEFAULT_COORDS.lat,
+                        lng: CONFIG.DEFAULT_COORDS.lng
+                    }),
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 0
+                    }
+                );
+            });
+
+            const payload = {
+                usuario: this.usuarioActual,
+                dispositivo_id: this.usuarioActual,
+                latitud: ubicacion.lat,
+                longitud: ubicacion.lng,
+                foto_base64: fotoBase64,
+                correo_destino: `${this.usuarioActual}@georescue.local`
+            };
+
+            const data = await ApiService.enviarAlertaSeguridad(payload);
+            this.agregarLogCiudadano(`🔒 Alerta antirrobo enviada: #${data.alerta_id} - ${data.mensaje}`);
+            this.mostrarPantallaSeñuelo(
+                'Alerta enviada con éxito',
+                `Se ha notificado al titular y se abrió el mapa interno en ${data.mapa_url}`
+            );
+        } catch (error) {
+            this.agregarLogCiudadano(`❌ Error antirrobo: ${error.message}`);
+            this.mostrarPantallaSeñuelo(
+                'No se pudo completar la captura',
+                `El sistema simuló un apagado seguro, pero la evidencia no pudo enviarse: ${error.message}`
+            );
+        } finally {
+            setTimeout(() => this.ocultarPantallaSeñuelo(), 2600);
+        }
+    },
+
+    async verificarSaludBackend() {
+        const indicador = document.getElementById('indicador-servidor');
+        try {
+            await ApiService.verificarSalud();
+            if (indicador) {
+                indicador.className = "w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse";
+                indicador.title = "Backend FastAPI conectado";
+            }
+        } catch (e) {
+            if (indicador) {
+                indicador.className = "w-2 h-2 rounded-full bg-amber-500 inline-block";
+                indicador.title = "Backend desconectado o modo local";
+            }
+        }
+    },
+
+    async verificarSesionPrevia() {
+        if (sessionStorage.getItem('qgeo_owner_token')) {
+            this.cerrarSesion();
+            return;
+        }
+        const flowVersion = this._authFlowVersion;
+        const usuarioGuardado = localStorage.getItem(CONFIG.STORAGE_KEYS.USER);
+        const rolGuardado = localStorage.getItem(CONFIG.STORAGE_KEYS.ROLE);
+        const codigoGuardado = localStorage.getItem(CONFIG.STORAGE_KEYS.CODE);
+        const institucionGuardada = localStorage.getItem(CONFIG.STORAGE_KEYS.INSTITUTION);
+        const tokenGuardado = localStorage.getItem(CONFIG.STORAGE_KEYS.TOKEN);
+
+        if (usuarioGuardado && rolGuardado && tokenGuardado) {
+            try {
+                const account = await ApiService.verificarSesion();
+                if (flowVersion !== this._authFlowVersion) return;
+                localStorage.setItem(CONFIG.STORAGE_KEYS.USER, account.usuario);
+                localStorage.setItem(CONFIG.STORAGE_KEYS.ROLE, account.rol);
+                localStorage.setItem(CONFIG.STORAGE_KEYS.INSTITUTION, account.institucion || 'individual');
+                if (account.codigo_enlace) {
+                    localStorage.setItem(CONFIG.STORAGE_KEYS.CODE, account.codigo_enlace);
+                }
+                this.iniciarSesionEnUI(
+                    account.usuario,
+                    account.rol,
+                    account.codigo_enlace || codigoGuardado,
+                    account.institucion || institucionGuardada
+                );
+            } catch (error) {
+                if (flowVersion !== this._authFlowVersion) return;
+                this.cerrarSesion();
+            }
+        } else {
+            this.cerrarSesion();
+        }
+    },
+
+    cambiarTabAuth(tab) {
+        const formLogin = document.getElementById('form-login');
+        const formRegistro = document.getElementById('form-registro');
+        const tabLogin = document.getElementById('tab-login');
+        const tabRegistro = document.getElementById('tab-registro');
+
+        if (tab === 'login') {
+            formLogin.classList.remove('hidden');
+            formRegistro.classList.add('hidden');
+            tabLogin.className = "py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 transition";
+            tabRegistro.className = "py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition";
+        } else {
+            formLogin.classList.add('hidden');
+            formRegistro.classList.remove('hidden');
+            tabRegistro.className = "py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 transition";
+            tabLogin.className = "py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition";
+        }
+    },
+
+    cambiarModoRegistro(modo) {
+        const institucional = modo === 'institucional';
+        const familiarButton = document.getElementById('registro-modo-familiar');
+        const institutionalButton = document.getElementById('registro-modo-institucional');
+        const institutionField = document.getElementById('registro-institucion-campo');
+        document.getElementById('registro-modo').value = institucional ? 'institucional' : 'familiar';
+        familiarButton.setAttribute('aria-pressed', String(!institucional));
+        institutionalButton.setAttribute('aria-pressed', String(institucional));
+        familiarButton.className = institucional
+            ? 'py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition'
+            : 'py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 transition';
+        institutionalButton.className = institucional
+            ? 'py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 transition'
+            : 'py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition';
+        institutionField.classList.toggle('hidden', !institucional);
+        [
+            'reg-institucion',
+            'reg-ruc',
+            'reg-tipo-institucion',
+            'reg-region-institucion',
+            'reg-correo-institucion',
+            'reg-contacto-institucion',
+            'reg-telefono-institucion',
+            'reg-evidencia-institucion',
+        ].forEach((id) => {
+            document.getElementById(id).required = institucional;
+        });
+    },
+
+    cambiarModoLogin(modo) {
+        const institucional = modo === 'institucional';
+        const botonFamiliar = document.getElementById('login-modo-familiar');
+        const botonInstitucional = document.getElementById('login-modo-institucional');
+        document.getElementById('login-modo').value = institucional ? 'institucional' : 'familiar';
+        botonFamiliar.setAttribute('aria-pressed', String(!institucional));
+        botonInstitucional.setAttribute('aria-pressed', String(institucional));
+        botonFamiliar.className = institucional
+            ? 'py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition'
+            : 'py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 transition';
+        botonInstitucional.className = institucional
+            ? 'py-2.5 font-semibold text-xs rounded-lg text-white bg-slate-800 transition'
+            : 'py-2.5 font-semibold text-xs rounded-lg text-slate-400 hover:text-white transition';
+        document.getElementById('login-modo-descripcion').textContent = institucional
+            ? 'Acceso del personal autorizado a la cuenta de su institución.'
+            : 'Acceso ciudadano y red familiar.';
+        document.getElementById('login-usuario-label').textContent = institucional
+            ? 'Correo o usuario institucional'
+            : 'Usuario familiar';
+        document.getElementById('login-usuario').placeholder = institucional
+            ? 'Correo asignado por la institución'
+            : 'Ej. standy_cerna';
+        document.getElementById('login-feedback').textContent = '';
+    },
+
+    async manejarLogin(event) {
+        event.preventDefault();
+        this._authFlowVersion += 1;
+        const usuario = document.getElementById('login-usuario').value.trim();
+        const password = document.getElementById('login-password').value.trim();
+        const feedback = document.getElementById('login-feedback');
+
+        feedback.innerHTML = `<span class="text-slate-400">Verificando en base de datos...</span>`;
+
+        try {
+            const modo = document.getElementById('login-modo').value;
+            const data = await ApiService.loginUsuario({ usuario, password, modo });
+            feedback.innerHTML = `<span class="text-emerald-400">✅ Acceso autorizado</span>`;
+            
+            localStorage.setItem(CONFIG.STORAGE_KEYS.USER, data.usuario);
+            localStorage.setItem(CONFIG.STORAGE_KEYS.ROLE, data.rol);
+            localStorage.setItem(CONFIG.STORAGE_KEYS.TOKEN, data.token);
+            localStorage.setItem(CONFIG.STORAGE_KEYS.INSTITUTION, data.institucion || 'individual');
+            if (data.codigo_enlace) {
+                localStorage.setItem(CONFIG.STORAGE_KEYS.CODE, data.codigo_enlace);
+            }
+
+            setTimeout(() => {
+                this.iniciarSesionEnUI(data.usuario, data.rol, data.codigo_enlace, data.institucion);
+            }, 400);
+        } catch (err) {
+            feedback.innerHTML = `<span class="text-red-400">❌ ${err.message}</span>`;
+        }
+    },
+
+    async manejarRegistro(event) {
+        event.preventDefault();
+        this._authFlowVersion += 1;
+        const flowVersion = this._authFlowVersion;
+        const usuario = document.getElementById('reg-usuario').value.trim();
+        const password = document.getElementById('reg-password').value.trim();
+        const modo = document.getElementById('registro-modo').value;
+        const nombreInstitucion = document.getElementById('reg-institucion').value.trim();
+        const feedback = document.getElementById('reg-feedback');
+
+        feedback.innerHTML = `<span class="text-slate-400">Registrando con hash seguro...</span>`;
+
+        try {
+            const data = await ApiService.registrarUsuario({
+                usuario,
+                password,
+                modo,
+                nombre_institucion: modo === 'institucional' ? nombreInstitucion : null,
+                ruc_institucion: modo === 'institucional' ? document.getElementById('reg-ruc').value.trim() : null,
+                tipo_institucion: modo === 'institucional' ? document.getElementById('reg-tipo-institucion').value.trim() : null,
+                region_institucion: modo === 'institucional' ? document.getElementById('reg-region-institucion').value.trim() : null,
+                correo_institucional: modo === 'institucional' ? document.getElementById('reg-correo-institucion').value.trim() : null,
+                contacto_institucional: modo === 'institucional' ? document.getElementById('reg-contacto-institucion').value.trim() : null,
+                telefono_institucional: modo === 'institucional' ? document.getElementById('reg-telefono-institucion').value.trim() : null,
+                evidencia_institucional_url: modo === 'institucional' ? document.getElementById('reg-evidencia-institucion').value.trim() : null
+            });
+            if (flowVersion !== this._authFlowVersion) return;
+            if (modo === 'institucional') {
+                this.cerrarSesion();
+                this.cambiarTabAuth('login');
+                this.cambiarModoLogin('institucional');
+                document.getElementById('login-usuario').value = usuario;
+                document.getElementById('login-feedback').innerHTML = `<span class="text-amber-300">${this.escaparTexto(data.mensaje)}</span>`;
+                return;
+            }
+            feedback.innerHTML = `<span class="text-emerald-400">✅ Registrado con éxito. Tu código es <b>${data.codigo_enlace}</b></span>`;
+            
+            setTimeout(() => {
+                this.cambiarTabAuth('login');
+                document.getElementById('login-usuario').value = usuario;
+                feedback.innerHTML = '';
+            }, 2500);
+        } catch (err) {
+            feedback.innerHTML = `<span class="text-red-400">❌ ${err.message}</span>`;
+        }
+    },
+
+    iniciarSesionEnUI(usuario, rol, codigoEnlace, institucion = 'individual') {
+        this.usuarioActual = usuario;
+        this.rolActual = String(rol || 'ciudadano').toLowerCase();
+        this.institucionActual = institucion || 'individual';
+
+        document.getElementById('pantalla-auth').classList.add('hidden');
+        document.getElementById('pantalla-dashboard').classList.remove('hidden');
+        document.getElementById('lbl-usuario').innerText = usuario;
+        
+        const badgeRol = document.getElementById('badge-rol');
+        const esInstitucional = this.rolActual !== 'ciudadano' && this.institucionActual !== 'individual';
+        badgeRol.innerText = esInstitucional ? `Institucional - ${this.rolActual}` : 'B2C - Ciudadano';
+
+        if (esInstitucional) {
+            this.configurarVistaB2G();
+            document.getElementById('institucion-nombre').value = this.institucionActual;
+            this.cargarCuentaInstitucional();
+            this.cargarUsuariosInstitucionales(this.institucionActual);
+            this.conectarTiempoRealInstitucional();
+        } else {
+            this.socketInstitucional?.close();
+            this.configurarVistaCiudadano(codigoEnlace);
+        }
+    },
+
+    cerrarSesion() {
+        this._authFlowVersion += 1;
+        localStorage.removeItem(CONFIG.STORAGE_KEYS.USER);
+        localStorage.removeItem(CONFIG.STORAGE_KEYS.ROLE);
+        localStorage.removeItem(CONFIG.STORAGE_KEYS.CODE);
+        localStorage.removeItem(CONFIG.STORAGE_KEYS.TOKEN);
+        localStorage.removeItem(CONFIG.STORAGE_KEYS.INSTITUTION);
+
+        clearInterval(this.timerCuentaRegresiva);
+        this.usuarioActual = null;
+        this.rolActual = null;
+        this.institucionActual = null;
+        this.socketInstitucional?.close();
+        this.socketInstitucional = null;
+
+        document.getElementById('pantalla-dashboard').classList.add('hidden');
+        document.getElementById('pantalla-auth').classList.remove('hidden');
+        document.getElementById('login-password').value = '';
+    },
+
+    // ==========================================
+    // SECCIÓN B2C: CIUDADANO, PRIVACIDAD & SISMO
+    // ==========================================
+    configurarVistaCiudadano(codigoEnlace) {
+        document.getElementById('vista-ciudadano').classList.remove('hidden');
+        document.getElementById('vista-institucion').classList.add('hidden');
+
+        if (codigoEnlace) {
+            document.getElementById('codigo-enlace-lbl').innerText = `Mi Código: ${codigoEnlace}`;
+        }
+
+        this.inicializarMapaCiudadano();
+        this.cargarFamiliares();
+    },
+
+    inicializarMapaCiudadano() {
+        if (!this.mapaCiudadano) {
+            setTimeout(() => {
+                const { lat, lng } = CONFIG.DEFAULT_COORDS;
+                this.mapaCiudadano = L.map('mapa-ciudadano').setView([lat, lng], 14);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    attribution: '© OpenStreetMap - QuantumGeoRescue'
+                }).addTo(this.mapaCiudadano);
+            }, 300);
+        } else {
+            setTimeout(() => this.mapaCiudadano.invalidateSize(), 300);
+        }
+    },
+
+    async cargarFamiliares() {
+        const contenedor = document.getElementById('lista-familiares');
+        contenedor.innerHTML = `<div class="text-xs text-slate-500">Cargando red familiar...</div>`;
+
+        try {
+            const familiares = await ApiService.listarFamiliares(this.usuarioActual);
+            if (!familiares || familiares.length === 0) {
+                contenedor.innerHTML = `<div class="text-xs text-slate-500 italic p-2 bg-slate-950 rounded-xl border border-slate-800">No tienes familiares vinculados todavía. Agrega uno arriba.</div>`;
+                return;
+            }
+
+            contenedor.innerHTML = familiares.map(f => `
+                <div class="flex justify-between items-center bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-xs">
+                    <div>
+                        <div class="font-bold text-slate-200">${f.nombre}</div>
+                        <div class="text-[10px] text-slate-400">${f.parentesco} ${f.dispositivo_id ? '• ID: ' + f.dispositivo_id : ''}</div>
+                    </div>
+                    <span class="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800/80 px-2 py-0.5 rounded-md">Protegido</span>
+                </div>
+            `).join('');
+        } catch (e) {
+            contenedor.innerHTML = `<div class="text-xs text-red-400">Error al cargar familiares.</div>`;
+        }
+    },
+
+    async agregarFamiliar(event) {
+        event.preventDefault();
+        const nombre = document.getElementById('fam-nombre').value.trim();
+        const parentesco = document.getElementById('fam-parentesco').value.trim();
+        const dispositivo_id = document.getElementById('fam-dispositivo').value.trim().toUpperCase() || "DEV_DEFAULT";
+
+        try {
+            await ApiService.registrarFamiliar({
+                usuario_responsable: this.usuarioActual,
+                nombre,
+                parentesco,
+                dispositivo_id
+            });
+            document.getElementById('fam-nombre').value = '';
+            document.getElementById('fam-parentesco').value = '';
+            document.getElementById('fam-dispositivo').value = '';
+            this.cargarFamiliares();
+        } catch (err) {
+            alert("No se pudo vincular familiar: " + err.message);
+        }
+    },
+
+    simularSismo() {
+        const estadoSensor = document.getElementById('estado-sensor');
+        const cajaConteo = document.getElementById('caja-conteo');
+        const lblSegundos = document.getElementById('lbl-segundos');
+
+        estadoSensor.innerText = "⚠️ ¡Movimiento inercial violento detectado (Magnitud 6.8)!";
+        estadoSensor.className = "text-xs text-red-400 font-bold animate-pulse";
+        cajaConteo.classList.remove('hidden');
+
+        this.segundosRestantes = 10;
+        lblSegundos.innerText = this.segundosRestantes;
+
+        clearInterval(this.timerCuentaRegresiva);
+        this.timerCuentaRegresiva = setInterval(() => {
+            this.segundosRestantes--;
+            lblSegundos.innerText = this.segundosRestantes;
+
+            if (this.segundosRestantes <= 0) {
+                clearInterval(this.timerCuentaRegresiva);
+                cajaConteo.classList.add('hidden');
+                estadoSensor.innerText = "🚨 Alerta Zero-Touch despachada: Inconsciencia/Sin respuesta.";
+                estadoSensor.className = "text-xs text-red-500 font-bold";
+                this.ejecutarDespachoAlerta("Alerta Sísmica Inercial", 5);
+            }
+        }, 1000);
+    },
+
+    confirmarEstoyBien() {
+        clearInterval(this.timerCuentaRegresiva);
+        document.getElementById('caja-conteo').classList.add('hidden');
+        const estadoSensor = document.getElementById('estado-sensor');
+        estadoSensor.innerText = "✅ Movimiento cancelado. El usuario confirmó encontrarse a salvo.";
+        estadoSensor.className = "text-xs text-emerald-400 font-medium";
+
+        this.agregarLogCiudadano("Usuario reportó 'Estoy Bien'. Se evitó el despacho de rescate.");
+    },
+
+    obtenerUbicacionReal(callback, mensaje = 'Obteniendo ubicación real...') {
+        const indicador = document.getElementById('estado-panic-silencioso');
+        if (indicador) {
+            indicador.innerHTML = mensaje;
+            indicador.className = 'text-[11px] text-amber-300 bg-slate-950 border border-amber-800 rounded-xl p-2';
+        }
+
+        if (!navigator.geolocation) {
+            callback({
+                lat: CONFIG.DEFAULT_COORDS.lat,
+                lng: CONFIG.DEFAULT_COORDS.lng,
+                fallback: true
+            });
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition((position) => {
+            callback({
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+                fallback: false
+            });
+        }, () => {
+            callback({
+                lat: CONFIG.DEFAULT_COORDS.lat,
+                lng: CONFIG.DEFAULT_COORDS.lng,
+                fallback: true
+            });
+        }, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+        });
+    },
+
+    async activarPanicSilencioso(detectadoPorVoz = false, fraseDetectada = '') {
+        const latLng = await new Promise((resolve) => {
+            this.obtenerUbicacionReal((resultado) => resolve(resultado), detectadoPorVoz ? '⚠️ Amenaza detectada por voz. Obteniendo ubicación real...' : '📍 Obteniendo ubicación actual para protocolo silencioso...');
+        });
+
+        const tipo = detectadoPorVoz ? 'ROBO_ASALTO_COACCION (voz)' : 'ROBO_ASALTO_COACCION (manual)';
+        this.geolocalizacionActual = latLng;
+
+        const payload = {
+            usuario: this.usuarioActual,
+            dispositivo_id: this.usuarioActual,
+            tipo_amenaza: detectadoPorVoz ? 'coaccion_voz' : 'panic_silencioso',
+            descripcion: detectadoPorVoz ? `Frase detectada: "${fraseDetectada}"` : 'Activación manual segura de pánico silencioso.',
+            amenaza_detectada: true,
+            activar_panic_silencioso: true,
+            nivel_gravedad: 5,
+            latitud: latLng.lat,
+            longitud: latLng.lng,
+            timestamp_dispositivo: new Date().toISOString()
+        };
+
+        try {
+            const data = await ApiService.alertaCoaccion(payload);
+            document.getElementById('coords-ciudadano').innerText = `Lat: ${latLng.lat.toFixed(4)}, Lng: ${latLng.lng.toFixed(4)}`;
+
+            const indicador = document.getElementById('estado-panic-silencioso');
+            if (indicador) {
+                indicador.innerHTML = `🚨 Protocolo silencioso activado. Alerta enviada a la PNP. ${latLng.fallback ? 'Se usó ubicación base por seguridad.' : 'Ubicación real capturada.'}`;
+                indicador.className = 'text-[11px] text-red-300 bg-red-950 border border-red-800 rounded-xl p-2';
+            }
+
+            this.agregarLogCiudadano(`🚨 Pánico silencioso activado en ${latLng.lat.toFixed(4)}, ${latLng.lng.toFixed(4)} como ${tipo}.`);
+            this.agregarLogCiudadano(`📡 Alerta #${data.alerta_id} priorizada a ${data.institucion_prioritaria}.`);
+
+            if (this.mapaCiudadano) {
+                if (this.marcadorCiudadano) this.mapaCiudadano.removeLayer(this.marcadorCiudadano);
+                this.marcadorCiudadano = L.marker([latLng.lat, latLng.lng], {
+                    icon: L.divIcon({
+                        html: '<div style="background:#a855f7;border:2px solid white;border-radius:999px;width:14px;height:14px;box-shadow:0 0 12px rgba(168,85,247,.9);"></div>',
+                        className: '',
+                        iconSize: [14, 14]
+                    })
+                }).addTo(this.mapaCiudadano)
+                    .bindPopup(`<b>🚨 Pánico Silencioso</b><br>Tipo: Robo/Asalto/Coacción<br>PNP priorizada`)
+                    .openPopup();
+                this.mapaCiudadano.setView([latLng.lat, latLng.lng], 15);
+            }
+
+            if (this.mapaB2G) {
+                this.cargarAlertasB2G();
+            }
+        } catch (err) {
+            const indicador = document.getElementById('estado-panic-silencioso');
+            if (indicador) {
+                indicador.innerHTML = `❌ No se pudo enviar el protocolo silencioso: ${err.message}`;
+                indicador.className = 'text-[11px] text-red-300 bg-red-950 border border-red-800 rounded-xl p-2';
+            }
+            this.agregarLogCiudadano(`❌ Error al activar pánico silencioso: ${err.message}`);
+        }
+    },
+
+    dispararAlertaManual() {
+        this.ejecutarDespachoAlerta("Alerta SOS Manual", 4);
+    },
+
+    async ejecutarDespachoAlerta(tipoEmergencia, nivelGravedad) {
+        // Coordenadas con leve dispersión para simular ubicación móvil en Cajamarca
+        const lat = CONFIG.DEFAULT_COORDS.lat + (Math.random() - 0.5) * 0.015;
+        const lng = CONFIG.DEFAULT_COORDS.lng + (Math.random() - 0.5) * 0.015;
+
+        document.getElementById('coords-ciudadano').innerText = `Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}`;
+        
+        // Actualizar radar a Modo Emergencia Revelada
+        const radarBadge = document.getElementById('radar-badge');
+        radarBadge.innerText = "🚨 Ubicación Revelada (Emergencia Activa)";
+        radarBadge.className = "text-[10px] font-semibold bg-red-950 text-red-400 border border-red-800 px-2.5 py-1 rounded-lg animate-pulse";
+
+        this.agregarLogCiudadano(`Despachando ${tipoEmergencia} (Gravedad: ${nivelGravedad}) hacia PostGIS...`);
+
+        try {
+            const data = await ApiService.despacharAlerta({
+                usuario: this.usuarioActual,
+                dispositivo_id: this.usuarioActual,
+                tipo_emergencia: tipoEmergencia,
+                nivel_gravedad: nivelGravedad,
+                latitud: lat,
+                longitud: lng,
+                timestamp_dispositivo: new Date().toISOString()
+            });
+
+            this.agregarLogCiudadano(`✅ Alerta #${data.alerta_id} registrada con éxito.`);
+            this.agregarLogCiudadano(`🚒 Recurso: ${data.recurso_asignado.unidad}`);
+            this.agregarLogCiudadano(`👨‍👩‍👦 Red notificada: ${data.notificacion_familiar.familiares_alertados.join(', ') || 'Ninguno'}`);
+
+            // Mostrar transmisión satelital a familiares con enlaces GPS
+            const cajaFamiliar = document.getElementById('caja-alerta-familiar');
+            const detalleFamiliar = document.getElementById('detalle-familiares-sos');
+            const btnWa = document.getElementById('btn-compartir-wa');
+
+            if (cajaFamiliar && detalleFamiliar) {
+                cajaFamiliar.classList.remove('hidden');
+                if (data.notificacion_familiar && data.notificacion_familiar.detalles && data.notificacion_familiar.detalles.length > 0) {
+                    detalleFamiliar.innerHTML = data.notificacion_familiar.detalles.map(d => `
+                        <div class="flex justify-between items-center py-1 border-b border-slate-800 last:border-0">
+                            <div>
+                                <span class="font-bold text-white">${d.nombre} (${d.parentesco})</span>
+                                <span class="block text-[10px] text-emerald-400">✓ Ubicación GPS enviada</span>
+                            </div>
+                            <a href="${d.enlace_ubicacion}" target="_blank" class="text-blue-400 hover:text-blue-300 text-[10px] underline font-semibold">
+                                📍 Abrir Mapa
+                            </a>
+                        </div>
+                    `).join('');
+                } else {
+                    detalleFamiliar.innerHTML = `
+                        <div class="text-amber-400 text-[10px]">
+                            ⚠️ No tienes familiares vinculados. Las autoridades B2G ya recibieron tus coordenadas.
+                        </div>
+                    `;
+                }
+
+                if (btnWa && data.notificacion_familiar && data.notificacion_familiar.enlace_compartir_whatsapp) {
+                    btnWa.href = data.notificacion_familiar.enlace_compartir_whatsapp;
+                }
+            }
+
+            // Actualizar Marcador en el Mapa
+            if (this.mapaCiudadano) {
+                if (this.marcadorCiudadano) this.mapaCiudadano.removeLayer(this.marcadorCiudadano);
+                this.marcadorCiudadano = L.marker([lat, lng])
+                    .addTo(this.mapaCiudadano)
+                    .bindPopup(`<b>🚨 SOS EN CURSO</b><br>ID: #${data.alerta_id}<br>${tipoEmergencia}`)
+                    .openPopup();
+                this.mapaCiudadano.setView([lat, lng], 15);
+            }
+        } catch (err) {
+            this.agregarLogCiudadano(`❌ Error al conectar con el servidor: ${err.message}`);
+        }
+    },
+
+    agregarLogCiudadano(mensaje) {
+        const log = document.getElementById('log-ciudadano');
+        if (!log) return;
+        const hora = new Date().toLocaleTimeString();
+        log.innerHTML += `<div><span class="text-slate-500">[${hora}]</span> ${mensaje}</div>`;
+        log.scrollTop = log.scrollHeight;
+    },
+
+    // ==========================================
+    // SECCIÓN B2G: COMANDO INSTITUCIONAL & RUTAS
+    // ==========================================
+    configurarVistaB2G() {
+        document.getElementById('vista-institucion').classList.remove('hidden');
+        document.getElementById('vista-ciudadano').classList.add('hidden');
+
+        this.inicializarMapaB2G();
+        this.cargarAlertasB2G();
+    },
+
+    inicializarMapaB2G() {
+        if (!this.mapaB2G) {
+            setTimeout(() => {
+                const { lat, lng } = CONFIG.DEFAULT_COORDS;
+                this.mapaB2G = L.map('mapa-b2g').setView([lat, lng], 13);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    attribution: '© OpenStreetMap - QuantumGeoRescue B2G'
+                }).addTo(this.mapaB2G);
+            }, 300);
+        } else {
+            setTimeout(() => this.mapaB2G.invalidateSize(), 300);
+        }
+    },
+
+    async cargarAlertasB2G() {
+        const contenedor = document.getElementById('lista-alertas-b2g');
+        const contenedorAtendidos = document.getElementById('personas-atendidas-b2g');
+        contenedor.innerHTML = `<div class="text-xs text-slate-400">Consultando PostGIS...</div>`;
+
+        try {
+            const alertas = await ApiService.obtenerAlertasActivas();
+            this.estadoLocalAtendidas = this.estadoLocalAtendidas || {};
+
+            this.alertasB2G = (alertas || []).map(a => {
+                const id = Number(a.id);
+                const estadoLocal = this.estadoLocalAtendidas[id];
+                const atendida = Boolean(
+                    estadoLocal !== undefined ? estadoLocal :
+                    a.atendida || String(a.estado_confirmacion || '').toUpperCase().includes('ATEND')
+                );
+
+                return {
+                    ...a,
+                    id,
+                    atendida,
+                    estado_confirmacion: atendida ? 'ATENDIDA' : (a.estado_confirmacion || 'PENDIENTE')
+                };
+            });
+
+            document.getElementById('b2g-metrica-alertas').innerText = this.alertasB2G.length;
+
+            if (!this.alertasB2G || this.alertasB2G.length === 0) {
+                contenedor.innerHTML = `<div class="text-xs text-slate-500 italic p-3 bg-slate-950 rounded-xl border border-slate-800">No hay alertas registradas en el sistema.</div>`;
+                contenedorAtendidos.innerHTML = `<p class="text-xs text-slate-500">No hay personas atendidas aún.</p>`;
+                document.getElementById('contador-personas-atendidas').innerText = '0';
+                return;
+            }
+
+            const activos = this.alertasB2G.filter(a => !a.atendida);
+            const atendidos = this.alertasB2G.filter(a => a.atendida);
+
+            const personasAtendidas = [...new Map(atendidos.map(a => {
+                const nombreUsuario = (a.usuario || a.dispositivo_id || 'Usuario no identificado');
+                return [String(nombreUsuario).toLowerCase(), {
+                    nombre: nombreUsuario,
+                    total: 1,
+                    alertas: [a.id]
+                }];
+            })).values()];
+
+            document.getElementById('contador-personas-atendidas').innerText = String(personasAtendidas.length);
+            contenedorAtendidos.innerHTML = personasAtendidas.length
+                ? personasAtendidas.map(item => `
+                    <div class="bg-emerald-950/40 border border-emerald-800 rounded-xl p-2 text-xs text-emerald-200">
+                        <div class="font-bold">${item.nombre}</div>
+                        <div class="text-[10px] text-emerald-300/80">Incidentes: ${item.alertas.length}</div>
+                    </div>
+                `).join('')
+                : '<p class="text-xs text-slate-500">No hay personas atendidas aún.</p>';
+
+            if (this.mapaB2G) {
+                this.marcadoresB2G.forEach(m => this.mapaB2G.removeLayer(m));
+            }
+            this.marcadoresB2G = [];
+
+            const renderCard = (a) => {
+                const esCoaccion = a.tipo_emergencia === 'ROBO_ASALTO_COACCION';
+                const estado = a.atendida ? 'Atendida' : 'Activa';
+                const estiloEstado = a.atendida ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : esCoaccion ? 'bg-violet-950 text-violet-300 border-violet-800' : 'bg-red-950 text-red-400 border-red-800';
+
+                if (this.mapaB2G) {
+                    const color = a.atendida ? '#10b981' : esCoaccion ? '#a855f7' : '#ef4444';
+                    const m = L.marker([a.latitud, a.longitud], {
+                        icon: L.divIcon({
+                            html: `<div style="background:${color};border:2px solid white;border-radius:999px;width:14px;height:14px;box-shadow:0 0 12px ${color};"></div>`,
+                            className: '',
+                            iconSize: [14, 14]
+                        })
+                    }).addTo(this.mapaB2G)
+                        .bindPopup(`
+                            <b>${esCoaccion ? '🚨' : '⚠️'} Alerta #${a.id}</b><br>
+                            Tipo: ${a.tipo_emergencia}<br>
+                            Usuario: ${a.usuario || a.dispositivo_id}<br>
+                            Gravedad: ${a.nivel_gravedad}/5<br>
+                            Estado: ${a.estado_confirmacion}<br>
+                            <button onclick="App.calcularRutaRescateB2G(${a.latitud}, ${a.longitud}, ${a.id})" class="mt-2 ${esCoaccion ? 'bg-violet-600' : 'bg-red-600'} text-white text-[10px] font-bold px-2 py-1 rounded">
+                                ${esCoaccion ? 'Despachar PNP' : 'Calcular Ruta de Rescate'}
+                            </button>
+                        `);
+                    this.marcadoresB2G.push(m);
+                }
+
+                return `
+                    <article class="bg-slate-950 border ${a.atendida ? 'border-emerald-700/80 opacity-80' : esCoaccion ? 'border-violet-700/80' : 'border-slate-800/80'} p-3 rounded-xl text-xs transition hover:${a.atendida ? 'border-emerald-500/60' : esCoaccion ? 'border-violet-500/60' : 'border-red-500/50'} cursor-pointer" data-alerta-id="${a.id}" onclick="App.calcularRutaRescateB2G(${a.latitud}, ${a.longitud}, ${a.id})">
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <button type="button" data-action="toggle-atendida" data-alerta-id="${a.id}" class="w-4 h-4 rounded border ${a.atendida ? 'bg-emerald-500 border-emerald-300' : 'bg-slate-900 border-slate-500'} flex-shrink-0" aria-label="Marcar ${a.id} como atendida"></button>
+                                    <span class="font-bold ${esCoaccion ? 'text-violet-400' : 'text-red-400'} truncate">#${a.id} • ${a.tipo_emergencia}</span>
+                                </div>
+                                <div class="mt-1 text-slate-400 text-[10px]">Usuario: <span class="text-slate-200">${a.usuario || a.dispositivo_id}</span></div>
+                            </div>
+                            <span class="${estiloEstado} px-2 py-0.5 rounded text-[10px] border whitespace-nowrap">${estado}</span>
+                        </div>
+
+                        <div class="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-400">
+                            <span>Coordenadas: ${a.latitud.toFixed(4)}, ${a.longitud.toFixed(4)}</span>
+                            <span class="${esCoaccion ? 'text-violet-400' : 'text-amber-400'}">${esCoaccion ? 'PNP' : 'Grav: ' + a.nivel_gravedad}</span>
+                        </div>
+
+                        <div class="mt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                            <span>Estado: <b class="${a.atendida ? 'text-emerald-400' : esCoaccion ? 'text-violet-400' : 'text-amber-400'}">${a.estado_confirmacion}</b></span>
+                            <button type="button" data-action="toggle-atendida" data-alerta-id="${a.id}" class="text-[10px] font-semibold ${a.atendida ? 'text-emerald-400' : esCoaccion ? 'text-violet-400' : 'text-blue-400'} hover:opacity-80">
+                                ${a.atendida ? 'Reabrir' : 'Marcar atendida'}
+                            </button>
+                        </div>
+                    </article>
+                `;
+            };
+
+            contenedor.innerHTML = `
+                <div class="space-y-4">
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-400">
+                            <span>Activos</span>
+                            <span>${activos.length}</span>
+                        </div>
+                        ${activos.length
+                            ? activos.map(renderCard).join('')
+                            : '<div class="text-xs text-slate-500 italic p-3 bg-slate-950 rounded-xl border border-slate-800">Sin incidentes activos.</div>'}
+                    </div>
+
+                    <div class="border-t border-slate-800 pt-3 space-y-2">
+                        <div class="flex items-center justify-between text-[10px] uppercase tracking-wider text-slate-400">
+                            <span>Atendidos</span>
+                            <span>${atendidos.length}</span>
+                        </div>
+                        ${atendidos.length
+                            ? atendidos.map(renderCard).join('')
+                            : '<div class="text-xs text-slate-500 italic p-3 bg-slate-950 rounded-xl border border-slate-800">No hay incidentes atendidos aún.</div>'}
+                    </div>
+                </div>
+            `;
+
+            contenedor.querySelectorAll('[data-action="toggle-atendida"]').forEach(boton => {
+                boton.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    const alertaId = Number(boton.dataset.alertaId);
+                    const alerta = this.alertasB2G.find(item => item.id === alertaId);
+                    if (!alerta) return;
+
+                    const nuevaEstado = !alerta.atendida;
+                    this.estadoLocalAtendidas[alertaId] = nuevaEstado;
+                    alerta.atendida = nuevaEstado;
+                    alerta.estado_confirmacion = nuevaEstado ? 'ATENDIDA' : 'PENDIENTE';
+                    this.cargarAlertasB2G();
+                });
+            });
+        } catch (err) {
+            contenedor.innerHTML = `<div class="text-xs text-red-400">Error al consultar alertas: ${err.message}</div>`;
+        }
+    },
+
+    async calcularRutaRescateB2G(destLat, destLng, alertaId) {
+        // Base de Operaciones Táctica COER Cajamarca
+        const origenLat = -7.1600;
+        const origenLng = -78.5120;
+        const hayBloqueos = document.getElementById('check-bloqueos').checked;
+
+        document.getElementById('ruta-estado').innerText = `Calculando ruta hacia Alerta #${alertaId}...`;
+
+        try {
+            const data = await ApiService.calcularRuta({
+                origen_lat: origenLat,
+                origen_lng: origenLng,
+                destino_lat: destLat,
+                destino_lng: destLng,
+                bloqueos_detectados: hayBloqueos
+            });
+
+            document.getElementById('ruta-estado').innerText = data.estado_algoritmo;
+            document.getElementById('ruta-tiempo').innerText = `ETA: ${data.tiempo_estimado_llegada} (${data.distancia_km} km)`;
+
+            // Trazar ruta vial real sobre el mapa de calles
+            if (this.mapaB2G && data.puntos_ruta) {
+                if (this.polilineaRutaB2G) this.mapaB2G.removeLayer(this.polilineaRutaB2G);
+                if (this.marcadorBaseCOER) this.mapaB2G.removeLayer(this.marcadorBaseCOER);
+
+                this.marcadorBaseCOER = L.marker([origenLat, origenLng])
+                    .addTo(this.mapaB2G)
+                    .bindPopup("<b>🚒 Base Central de Operaciones B2G (COER Cajamarca)</b><br>Punto de salida del equipo de rescate");
+
+                const colorRuta = hayBloqueos ? '#ef4444' : '#2563eb';
+                this.polilineaRutaB2G = L.polyline(data.puntos_ruta, {
+                    color: colorRuta,
+                    weight: 5,
+                    opacity: 0.9,
+                    dashArray: hayBloqueos ? '8, 8' : null
+                }).addTo(this.mapaB2G);
+
+                this.mapaB2G.fitBounds(this.polilineaRutaB2G.getBounds(), { padding: [50, 50] });
+            }
+        } catch (err) {
+            document.getElementById('ruta-estado').innerText = "Error calculando ruta: " + err.message;
+        }
+    }
+};
 
 document.addEventListener("DOMContentLoaded", () => {
-    inicializarSistema();
+    App.init();
 });
-
-async function inicializarSistema() {
-    try {
-        const res = await ApiService.verificarSaludServidor();
-        console.log("Conectado al Backend:", res.mensaje);
-    } catch (err) {
-        console.warn("Backend FastAPI offline, operando en modo local.");
-    }
-}
-
-function alternarFormularioRegistro(mostrar) {
-    const loginForm = document.getElementById('form-login');
-    const registroForm = document.getElementById('form-registro');
-    if (mostrar) {
-        loginForm.classList.add('hidden');
-        registroForm.classList.remove('hidden');
-    } else {
-        registroForm.classList.add('hidden');
-        loginForm.classList.remove('hidden');
-    }
-}
-
-async function realizarRegistro(event) {
-    event.preventDefault();
-    const rol = document.getElementById('reg-rol').value;
-    const usuario = document.getElementById('reg-usuario').value.trim();
-    const password = document.getElementById('reg-password').value.trim();
-
-    try {
-        const data = await ApiService.registrarUsuario({ usuario, password, rol });
-        alert(`✅ ${data.mensaje}\nTu código de enlace personal es: ${data.codigo_enlace}`);
-        alternarFormularioRegistro(false);
-        document.getElementById('input-usuario').value = usuario;
-    } catch (err) {
-        alert("Error en el registro: " + err.message);
-    }
-}
-
-function realizarLogin(event) {
-    event.preventDefault();
-    const rol = document.getElementById('select-rol').value;
-    const usuario = document.getElementById('input-usuario').value;
-    const password = document.getElementById('input-password').value;
-
-    if (!usuario.trim() || !password.trim()) {
-        alert("Por favor, ingrese sus credenciales.");
-        return;
-    }
-
-    document.getElementById('auth-screen').classList.add('hidden');
-    document.getElementById('app-container').classList.remove('hidden');
-    document.getElementById('usuario-conectado').innerText = usuario;
-
-    if (rol === 'institucion') {
-        configurarVistaInstitucion();
-    } else {
-        configurarVistaCiudadano();
-    }
-}
-
-function cerrarSesion() {
-    document.getElementById('app-container').classList.add('hidden');
-    document.getElementById('auth-screen').classList.remove('hidden');
-    document.getElementById('input-password').value = '';
-}
-
-function configurarVistaInstitucion() {
-    document.getElementById('badge-rol').innerText = "Portal B2G (Gobierno)";
-    document.getElementById('vista-institucion').classList.remove('hidden');
-    document.getElementById('vista-ciudadano').classList.add('hidden');
-    
-    if (!mapInstitucion) {
-        setTimeout(() => {
-            mapInstitucion = L.map('map-institucion').setView([-7.1637, -78.5003], 13);
-            L.tileLayer(tileUrl, { maxZoom: 19, attribution: 'Geoapify' }).addTo(mapInstitucion);
-        }, 300);
-    } else {
-        setTimeout(() => { mapInstitucion.invalidateSize(); }, 300);
-    }
-}
-
-function configurarVistaCiudadano() {
-    document.getElementById('badge-rol').innerText = "Portal B2C (Familiar)";
-    document.getElementById('vista-ciudadano').classList.remove('hidden');
-    document.getElementById('vista-institucion').classList.add('hidden');
-    
-    if (!mapCiudadano) {
-        setTimeout(() => {
-            mapCiudadano = L.map('map-ciudadano').setView([-7.1637, -78.5003], 13);
-            L.tileLayer(tileUrl, { maxZoom: 19, attribution: 'Geoapify' }).addTo(mapCiudadano);
-        }, 300);
-    } else {
-        setTimeout(() => { mapCiudadano.invalidateSize(); }, 300);
-    }
-}
-
-async function dispararAlertaPrueba() {
-    const latDesvio = -7.1637 + (Math.random() - 0.5) * 0.02;
-    const lngDesvio = -78.5003 + (Math.random() - 0.5) * 0.02;
-
-    const datosAlerta = {
-        dispositivo_id: document.getElementById('input-usuario').value || "DEVICE_GOV_01",
-        tipo_emergencia: "Alerta Sísmica Inercial",
-        nivel_gravedad: 5,
-        latitud: latDesvio,
-        longitud: lngDesvio,
-        timestamp_dispositivo: new Date().toISOString()
-    };
-
-    try {
-        const data = await ApiService.despacharAlerta(datosAlerta);
-        
-        if (mapInstitucion) {
-            L.marker([latDesvio, lngDesvio]).addTo(mapInstitucion)
-                .bindPopup(`<b>🚨 Alerta en BD</b><br>Recurso asignado: ${data.recurso_asignado.unidad}`)
-                .openPopup();
-        }
-
-        const listaAlertas = document.getElementById('lista-alertas-institucion');
-        if(listaAlertas) {
-            listaAlertas.innerHTML = `
-                <div class="bg-red-950/40 border border-red-800/50 p-3 rounded-xl text-xs space-y-1">
-                    <div class="flex justify-between font-bold text-red-400">
-                        <span>🚨 Sismo Detectado</span>
-                        <span>Grav: 5</span>
-                    </div>
-                    <p class="text-slate-300 text-[11px]">Lat: ${latDesvio.toFixed(4)}, Lng: ${lngDesvio.toFixed(4)}</p>
-                    <p class="text-[10px] text-slate-400">Unidad: ${data.recurso_asignado.unidad}</p>
-                </div>
-            ` + listaAlertas.innerHTML;
-        }
-
-        if (mapCiudadano) {
-            mapCiudadano.setView([latDesvio, lngDesvio], 15);
-            if (marcadorFamiliar) mapCiudadano.removeLayer(marcadorFamiliar);
-            
-            marcadorFamiliar = L.marker([latDesvio, lngDesvio]).addTo(mapCiudadano)
-                .bindPopup(`<b>🚨 EMERGENCIA ACTIVA</b><br>Ubicación compartida con autoridades.`)
-                .openPopup();
-            
-            document.getElementById('estado-radar').innerText = "⚠️ Ubicación Revelada (Emergencia)";
-            document.getElementById('estado-radar').className = "text-red-400 text-[10px] bg-red-950/50 px-2.5 py-1 rounded-lg border border-red-800";
-        }
-    } catch (err) {
-        console.error("Error al despachar alerta:", err);
-    }
-}
-
-function simularSismo() {
-    document.getElementById('estado-inercial').innerText = "⚠️ ¡Movimiento Sísmico Detectado!";
-    document.getElementById('estado-inercial').className = "text-sm sm:text-base font-black text-red-500 animate-pulse";
-    document.getElementById('contador-seguridad').classList.remove('hidden');
-    document.getElementById('btn-estoy-bien').classList.remove('hidden');
-    
-    let segundos = 10;
-    document.getElementById('tiempo-restante').innerText = segundos;
-    
-    clearInterval(cuentaRegresivaInterval);
-    cuentaRegresivaInterval = setInterval(() => {
-        segundos--;
-        document.getElementById('tiempo-restante').innerText = segundos;
-        if(segundos <= 0) {
-            clearInterval(cuentaRegresivaInterval);
-            document.getElementById('estado-inercial').innerText = "🚨 Alerta Zero-Touch Enviada a BD";
-            document.getElementById('estado-inercial').className = "text-sm sm:text-base font-black text-red-600";
-            document.getElementById('contador-seguridad').classList.add('hidden');
-            document.getElementById('btn-estoy-bien').classList.add('hidden');
-            dispararAlertaPrueba();
-        }
-    }, 1000);
-}
-
-function confirmarBien() {
-    clearInterval(cuentaRegresivaInterval);
-    document.getElementById('estado-inercial').innerText = "Sensores Activos (Seguro)";
-    document.getElementById('estado-inercial').className = "text-sm sm:text-base font-black text-emerald-400";
-    document.getElementById('contador-seguridad').classList.add('hidden');
-    document.getElementById('btn-estoy-bien').classList.add('hidden');
-    document.getElementById('estado-radar').innerText = "Modo Seguro (Ubicación Oculta)";
-    document.getElementById('estado-radar').className = "text-slate-400 text-[10px] bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800";
-}
-
-function abrirModalFamiliar() { 
-    document.getElementById('modal-familiar').classList.remove('hidden');
-    document.getElementById('fam-nombre').value = '';
-    document.getElementById('fam-parentesco').value = '';
-    document.getElementById('fam-dispositivo').value = '';
-}
-
-function cerrarModalFamiliar() { 
-    document.getElementById('modal-familiar').classList.add('hidden'); 
-}
-
-async function registrarFamiliarReal(event) {
-    event.preventDefault();
-    const codigoIngresado = document.getElementById('fam-dispositivo').value.trim().toUpperCase();
-    
-    const nuevoFamiliar = {
-        usuario_responsable: document.getElementById('input-usuario').value,
-        nombre: document.getElementById('fam-nombre').value,
-        parentesco: document.getElementById('fam-parentesco').value,
-        dispositivo_id: codigoIngresado
-    };
-
-    try {
-        const data = await ApiService.registrarFamiliar(nuevoFamiliar);
-        
-        const contenedor = document.getElementById('contenedor-familiares');
-        if(contenedor.innerHTML.includes("Sin familiares")) {
-            contenedor.innerHTML = "";
-        }
-
-        contenedor.innerHTML = `
-            <div class="flex justify-between items-center text-xs bg-slate-950 p-3 rounded-xl border border-slate-800">
-                <div>
-                    <span class="text-slate-200 font-bold">${nuevoFamiliar.nombre}</span>
-                    <span class="text-slate-400 text-[10px] block">${nuevoFamiliar.parentesco} • Código: ${nuevoFamiliar.dispositivo_id}</span>
-                </div>
-                <div class="text-right">
-                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 mr-1"></span>
-                    <span class="text-emerald-400 font-semibold text-[11px]">Activo (Privado)</span>
-                </div>
-            </div>
-        ` + contenedor.innerHTML;
-
-        cerrarModalFamiliar();
-        alert("✅ " + data.mensaje);
-    } catch (err) {
-        alert("Error al guardar en base de datos: " + err.message);
-    }
-}
